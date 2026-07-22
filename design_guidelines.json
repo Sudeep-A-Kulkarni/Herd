@@ -1,0 +1,184 @@
+{
+  "app_name": "BikeFriends",
+  "personality": "7 Dark-First Utility",
+  "personality_one_liner": "A tactical, live-action command center designed for instant readability during high-speed rides.",
+  "color": {
+    "surface": "#0D0E11",
+    "onSurface": "#F5F6F8",
+    "surfaceSecondary": "#1A1C21",
+    "onSurfaceSecondary": "#E0E2E7",
+    "surfaceTertiary": "#262930",
+    "onSurfaceTertiary": "#B0B3BC",
+    "surfaceInverse": "#FFFFFF",
+    "onSurfaceInverse": "#0D0E11",
+    "brand": "#FF6B00",
+    "brandPrimary": "#FF6B00",
+    "onBrandPrimary": "#000000",
+    "brandSecondary": "#CC5600",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#402008",
+    "onBrandTertiary": "#FF9D4A",
+    "success": "#00E676",
+    "onSuccess": "#003318",
+    "warning": "#FFD600",
+    "onWarning": "#332B00",
+    "error": "#FF3B30",
+    "onError": "#FFFFFF",
+    "info": "#00AEEF",
+    "onInfo": "#002333",
+    "border": "#262930",
+    "borderStrong": "#3B3F4A",
+    "divider": "#1A1C21"
+  },
+  "typography": {
+    "displayFontFamily": "Rajdhani",
+    "textFontFamily": "Manrope",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Use tight, tactical spacing for metrics to ensure glanceability. Maintain consistent padding around HUD panels to clear safe areas.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "Ionicons",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use heavy tint blur over the live map for the Ride HUD to ensure metrics are readable while keeping the map visually continuous.",
+      "Use blur for the bottom tab bar when scrolling on standard screens."
+    ],
+    "dont's": [
+      "Do not use blur on standard lists, buttons, or form fields."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Auth",
+      "purpose": "Signup/Login with high-contrast inputs and a full-bleed dark motorcycle background.",
+      "states": {
+        "loading": "Spinner centered.",
+        "empty": "",
+        "error": "Standard alert toast."
+      },
+      "layout": "Full-bleed background image with a vertical gradient scrim (transparent to >80% surface opacity at bottom). Inputs stacked in the lower half with a prominent brandPrimary sticky submit button."
+    },
+    {
+      "name": "Home",
+      "purpose": "Dashboard showing upcoming rides, active friends riding now, and quick stats.",
+      "states": {
+        "loading": "Skeleton rows.",
+        "empty": "Illustration/Photo of bikers with a CTA to start a ride.",
+        "error": "Retry connection."
+      },
+      "layout": "Scrollable feed. Top section uses surfaceSecondary cards for 'Active Now' showing friends' current speeds and avatars. Lower section lists recent routes."
+    },
+    {
+      "name": "Ride",
+      "purpose": "The core tracking screen combining live map, telemetry HUD, and Voice Intercom.",
+      "states": {
+        "loading": "Map loading spinner.",
+        "empty": "",
+        "error": "GPS signal lost banner."
+      },
+      "layout": "Full-screen map. Top HUD floating panel: Voice room status, active speaker avatars, and prominent mic mute/unmute toggle. Bottom HUD floating panel: Extra-large Rajdhani display for Speed, flanked by Distance and Duration. A sticky 'End Ride' button sits in the bottom HUD."
+    },
+    {
+      "name": "Friends",
+      "purpose": "Manage connections and view who is online/riding.",
+      "states": {
+        "loading": "Skeleton list.",
+        "empty": "Text: No friends added yet. CTA to search.",
+        "error": "Failed to load."
+      },
+      "layout": "Search bar pinned to top. List items with avatar, username, and a pulsing status dot (success color if riding, surfaceTertiary if offline). Accept/Decline action chips for pending requests."
+    },
+    {
+      "name": "Leaderboard",
+      "purpose": "Rank friends by total km, total rides, and top speed.",
+      "states": {
+        "loading": "Skeleton leaderboard.",
+        "empty": "No stats recorded yet.",
+        "error": "Failed to load."
+      },
+      "layout": "Segmented control at the top (Total KM / Top Speed / Rides). Top 3 riders emphasized with larger typography. The rest of the list follows in standard rows. Use display typography for all metrics."
+    },
+    {
+      "name": "Profile",
+      "purpose": "User details, bike model, and app settings.",
+      "states": {
+        "loading": "Skeleton.",
+        "empty": "",
+        "error": ""
+      },
+      "layout": "Large cover photo or tinted brand tertiary banner. Avatar overlapping the banner. Details stacked in surfaceSecondary cards. Sign out button at the very bottom."
+    }
+  ],
+  "images": {
+    "auth_background": {
+      "url": "https://images.pexels.com/photos/31777129/pexels-photo-31777129.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "dark": "https://images.pexels.com/photos/31777129/pexels-photo-31777129.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Bikers at night"
+    },
+    "empty_home_rides": {
+      "url": "https://images.pexels.com/photos/9789339/pexels-photo-9789339.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "dark": "https://images.pexels.com/photos/9789339/pexels-photo-9789339.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Group of bikers on highway"
+    },
+    "avatar_1": {
+      "url": "https://images.unsplash.com/photo-1611004061856-ccc3cbe944b2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTB8MHwxfHNlYXJjaHwxfHxtb3RvcmN5Y2xlJTIwaGVsbWV0fGVufDB8fHx8MTc4NDcxMDkzMXww&ixlib=rb-4.1.0&q=85",
+      "dark": "https://images.unsplash.com/photo-1611004061856-ccc3cbe944b2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTB8MHwxfHNlYXJjaHwxfHxtb3RvcmN5Y2xlJTIwaGVsbWV0fGVufDB8fHx8MTc4NDcxMDkzMXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Black and orange helmet"
+    },
+    "avatar_2": {
+      "url": "https://images.unsplash.com/photo-1590506995460-d0d9892b54da?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTB8MHwxfHNlYXJjaHwyfHxtb3RvcmN5Y2xlJTIwaGVsbWV0fGVufDB8fHx8MTc4NDcxMDkzMXww&ixlib=rb-4.1.0&q=85",
+      "dark": "https://images.unsplash.com/photo-1590506995460-d0d9892b54da?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTB8MHwxfHNlYXJjaHwyfHxtb3RvcmN5Y2xlJTIwaGVsbWV0fGVufDB8fHx8MTc4NDcxMDkzMXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Black and red helmet"
+    }
+  },
+  "haptics": {
+    "StartRide": "impactHeavy",
+    "EndRide": "impactHeavy",
+    "MicToggle": "impactMedium",
+    "TabSwitch": "selection",
+    "AcceptFriendRequest": "notificationSuccess"
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the Dark-First Utility guidelines. Pure black is avoided; use the specified deep obsidian/graphite tokens.",
+    "On the Ride screen, overlay the HUD panels on top of the Map. Ensure there is sufficient contrast (using high opacity tints or blurred backgrounds) so that the HUD text remains readable regardless of the map underneath.",
+    "Implement the voice intercom toggle as a prominent action in the top HUD on the Ride screen. It should be easily tappable while riding.",
+    "For the bottom HUD (speed/distance), utilize the Rajdhani display font at extra-large sizes for maximum glanceability.",
+    "Make sure to apply the gradient scrim on any full-bleed background images (like the Auth screen) so that text on top remains readable.",
+    "Never use indigo, violet, or blue colors per the nuclear ban list. Stick exclusively to the deep carbon/slate and amber/orange palette."
+  ]
+}
