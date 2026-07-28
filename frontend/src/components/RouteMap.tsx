@@ -1,11 +1,9 @@
 /**
- * RouteMap — Leaflet-in-WebView map that works in Expo Go.
- *
- * Renders the current live polyline + a rider marker. Communicates via
- * postMessage / injectJavaScript.
+ * RouteMap — Leaflet-in-WebView on native, inline iframe fallback on web.
+ * Renders live polyline + rider marker.
  */
 import React, { useEffect, useMemo, useRef } from "react";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, View, Platform } from "react-native";
 import { WebView } from "react-native-webview";
 import { theme } from "@/src/lib/theme";
 
@@ -51,32 +49,69 @@ const HTML = (brand: string) => `<!DOCTYPE html>
       if (!marker) marker = L.marker([payload.center.lat, payload.center.lng], { icon: riderIcon }).addTo(map);
       else marker.setLatLng([payload.center.lat, payload.center.lng]);
     }
+    if (payload.polyline && payload.polyline.length > 1 && payload.fitOnce) {
+      map.fitBounds(poly.getBounds(), { padding:[30,30] });
+    }
   }
-  window.addEventListener('message', function(e){ try { apply(JSON.parse(e.data)); } catch(err){} });
-  document.addEventListener('message', function(e){ try { apply(JSON.parse(e.data)); } catch(err){} });
+  window.__apply = apply;
+  window.addEventListener('message', function(e){ try { apply(typeof e.data==='string'?JSON.parse(e.data):e.data); } catch(err){} });
+  document.addEventListener('message', function(e){ try { apply(typeof e.data==='string'?JSON.parse(e.data):e.data); } catch(err){} });
   window.ReactNativeWebView && window.ReactNativeWebView.postMessage('ready');
+  window.parent && window.parent.postMessage && window.parent.postMessage('ready','*');
 </script>
 </body></html>`;
 
-export function RouteMap({ polyline, center, height = "100%", testID }: Props) {
+// ---- Web variant: inline iframe ----
+function RouteMapWeb({ polyline, center, height, testID }: Props) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const readyRef = useRef(false);
+  const html = useMemo(() => HTML(theme.color.brand), []);
+
+  const push = () => {
+    if (!readyRef.current || !iframeRef.current) return;
+    iframeRef.current.contentWindow?.postMessage({ polyline, follow: true, center, fitOnce: true }, "*");
+  };
+
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.data === "ready") { readyRef.current = true; push(); }
+    };
+    (globalThis as any).addEventListener?.("message", onMsg);
+    return () => (globalThis as any).removeEventListener?.("message", onMsg);
+  }, []);
+
+  useEffect(() => { push(); }, [polyline, center]);
+
+  return (
+    <View style={[styles.wrap, { height }]} testID={testID}>
+      {/* @ts-ignore native-only element on web */}
+      <iframe
+        ref={iframeRef as any}
+        srcDoc={html}
+        style={{ width: "100%", height: "100%", border: "0", background: theme.color.surface }}
+        title="route-map"
+      />
+    </View>
+  );
+}
+
+// ---- Native variant: react-native-webview ----
+function RouteMapNative({ polyline, center, height, testID }: Props) {
   const ref = useRef<WebView>(null);
   const readyRef = useRef(false);
   const pendingRef = useRef<string | null>(null);
-
   const html = useMemo(() => HTML(theme.color.brand), []);
 
   const send = (payload: any) => {
     const msg = JSON.stringify(payload);
     if (readyRef.current) {
-      ref.current?.injectJavaScript(`(function(){ try{ (window.__apply||function(p){ const ev=new MessageEvent('message',{data:p}); window.dispatchEvent(ev); })(${JSON.stringify(msg)}); }catch(e){} true; })();`);
+      ref.current?.injectJavaScript(`(function(){ try{ window.__apply(${JSON.stringify(msg)}); }catch(e){} true; })();`);
     } else {
       pendingRef.current = msg;
     }
   };
 
-  useEffect(() => {
-    send({ polyline, follow: true, center });
-  }, [polyline, center]);
+  useEffect(() => { send({ polyline, follow: true, center, fitOnce: true }); }, [polyline, center]);
 
   return (
     <View style={[styles.wrap, { height }]} testID={testID}>
@@ -93,7 +128,7 @@ export function RouteMap({ polyline, center, height = "100%", testID }: Props) {
             readyRef.current = true;
             if (pendingRef.current) {
               const msg = pendingRef.current;
-              ref.current?.injectJavaScript(`(function(){ const ev=new MessageEvent('message',{data:${JSON.stringify(msg)}}); window.dispatchEvent(ev); true; })();`);
+              ref.current?.injectJavaScript(`(function(){ try{ window.__apply(${JSON.stringify(msg)}); }catch(e){} true; })();`);
               pendingRef.current = null;
             }
           }
@@ -101,6 +136,10 @@ export function RouteMap({ polyline, center, height = "100%", testID }: Props) {
       />
     </View>
   );
+}
+
+export function RouteMap(props: Props) {
+  return Platform.OS === "web" ? <RouteMapWeb {...props} /> : <RouteMapNative {...props} />;
 }
 
 const styles = StyleSheet.create({

@@ -1,0 +1,69 @@
+{
+  "summary": "Iteration 2 — full test pass on new features: invite-more, group start-ride, group recap, and WS audio relay. Backend: 25/25 pytest cases green (17 regression + 8 new). Frontend: sign-in → home → group room → recap flow all works. Sunset Cruise recap renders 175.5 km, 134 km/h, 3 riders as spec'd. Start ride from group room works ONLY when browser geolocation permission is granted; otherwise it silently swallows the permission error and the UI never leaves the 'Start my ride' state — a real UX gap for web users. Push-to-talk hint text 'Push-to-talk voice enabled' is present and the button becomes enabled after Join intercom. Regression tabs (Friends / Leaderboard / Profile) still render correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "GroupRoom onStartRide",
+        "issue": "When ride-tracker.start() throws (e.g., geolocation permission denied on web), the error is silently swallowed. Backend session IS created via /groups/{id}/start-ride but tracker.tracking stays false → 'Start my ride' button never flips to 'End my ride' and user gets zero feedback. Reference: /app/frontend/app/group/[id]/index.tsx:82-88",
+        "testID": "group-start-ride-button",
+        "priority": "HIGH"
+      },
+      {
+        "component": "GroupRoom recap route key",
+        "issue": "React warning 'Encountered two children with the same key' emitted while rendering recap. Likely duplicate key in members / RouteMap list. Reference: /app/frontend/app/group/[id]/recap.tsx",
+        "testID": "recap-card",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Group Start Ride (web)",
+        "issue": "Frontend creates a backend session that is never surfaced. If tracker.start() fails after the POST, the orphaned active session lingers in DB (rider_id + ride_id, status=active). Suggest either (a) roll the session back on tracker failure, or (b) rely on GET /rides/active on group focus to hydrate rideSession state so the End button can appear even after tracker failure.",
+        "affected_testIDs": ["group-start-ride-button", "group-end-ride-button"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "expo-router param",
+        "issue": "Console warning: \"Route '/[id]/index' with param 'id' was specified both in the path and as a param, removing from path\". Emitted from router.replace/push calls that pass {id} inside pathname AND params. Reference: /app/frontend/app/group/[id]/index.tsx (leave/goToRecap)"
+      },
+      {
+        "component": "props.pointerEvents",
+        "issue": "Deprecation warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Recurs on every screen — likely in a shared component (Ionicons or Pressable wrapper)."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_bikefriends.py",
+    "/app/test_reports/pytest/iteration_2.xml"
+  ],
+  "action_items": [
+    "Fix silent failure in /app/frontend/app/group/[id]/index.tsx onStartRide — surface tracker.start() errors via a toast/alert AND either rollback the backend session or hydrate rideSession from GET /rides/active so the End button can render even if geolocation is off.",
+    "De-dupe React keys in recap screen crew/RouteMap render to eliminate 'two children with the same key' warning.",
+    "Clean up expo-router calls that pass id both in the pathname string and the params object (e.g. router.replace(`/group/${id}/recap`) — drop the params or the pathname interpolation, not both).",
+    "Replace deprecated props.pointerEvents usage with style.pointerEvents across shared components."
+  ],
+  "critical_code_review_comments": [
+    "server.py end_ride() correctly gates parent-ride completion on `not parent.get('is_group_ride')` — confirmed by test_group_start_ride_idempotent_and_keeps_group_active. Good fix.",
+    "WS audio relay uses broadcast_except(sender) — sender does not echo their own audio. Verified in test_ws_audio_relayed_to_others_not_sender.",
+    "invite_more re-invites users whose status is 'declined'/'left' and no-ops on 'joined'/'invited'. Skips non-friends. Good.",
+    "recap's crew_avg_speed_kmh is a mean-of-means (avg of avg_speed_kmh per session) rather than a distance-weighted true average — matches spec but worth noting."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_bikefriends.py (added 8 iteration-2 tests: recap x2, invite x2, start-ride x2, ws x2)"
+  ],
+  "success_rate": {
+    "backend": "100% (25/25)",
+    "frontend": "~90% (all screens render; Start Ride requires geo permission on web)"
+  },
+  "seed_data_creation": "No new seed data created. Verified & restored Sunset Cruise to 3 completed sessions (rider/maria/jay) after test pollution from a Start Ride click that created an active session with 0 km. Cleaned via one-off script.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Sunset Cruise group ride_id = 80b88d0e-7a49-48da-aada-1161310a00a5, owner rider@bike.com, 3 completed sessions (62.4 / 58.9 / 54.2 km, top 134 km/h). rider is joined+owner in 3 groups (Test Ride, Weekend Ride, Sunset Cruise). Backend pytest suite is at /app/backend/tests/test_bikefriends.py — run with `pytest backend/tests/test_bikefriends.py -o asyncio_mode=auto -v`. When testing Start Ride from group room in browser, GRANT geolocation permission (context.grant_permissions(['geolocation']); context.set_geolocation(...)) or the UI will not update. Console errors 401 during initial page load are harmless (auth-me before token is set).",
+  "rca_of_issue": "Start-my-ride UI-not-updating bug: In /app/frontend/app/group/[id]/index.tsx:79-88, onStartRide first POSTs /groups/{id}/start-ride (backend creates session, returns 200), then calls await tracker.start(). ride-tracker.ts:119-134 requires Location.requestForegroundPermissionsAsync() and throws if not granted. The outer try/catch in onStartRide swallows the error, so setRideSession(s) already ran (state has a session) but tracker.tracking is still false — and the JSX at line 230 gates on tracker.tracking, so 'End my ride' never appears. On real mobile this is a non-issue because location is granted; on web/headless test it looks broken. Mitigation: (1) call tracker.start() BEFORE the backend POST or in a try that rolls back the session on failure, (2) show an alert/toast on caught error, (3) render the End button on rideSession truthy regardless of tracker.tracking so users can at least end the orphan session."
+}

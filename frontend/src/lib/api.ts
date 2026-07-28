@@ -102,3 +102,22 @@ export type GroupRide = {
   status: string;
   participants: GroupParticipant[];
 };
+
+export type GroupRecap = {
+  ride_id: string;
+  title: string;
+  started_at: string;
+  ended_at?: string | null;
+  crew_total_km: number;
+  crew_top_speed_kmh: number;
+  crew_avg_speed_kmh: number;
+  total_riders: number;
+  members: {
+    rider: UserPublic;
+    distance_km: number;
+    top_speed_kmh: number;
+    avg_speed_kmh: number;
+    duration_seconds: number;
+    polyline: [number, number][];
+  }[];
+};

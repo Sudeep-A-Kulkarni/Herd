@@ -485,7 +485,11 @@ async def end_ride(session_id: str, body: EndRideBody, user: Annotated[dict, Dep
         "status": "completed",
     }
     await db.ride_sessions.update_one({"id": session_id}, {"$set": updates})
-    await db.rides.update_one({"id": session["ride_id"]}, {"$set": {"ended_at": updates["ended_at"], "status": "completed"}})
+    # Only close the parent ride row for SOLO rides. For group rides, the ride
+    # stays active until the owner explicitly leaves/ends it.
+    parent = await db.rides.find_one({"id": session["ride_id"]}, {"_id": 0})
+    if parent and not parent.get("is_group_ride"):
+        await db.rides.update_one({"id": session["ride_id"]}, {"$set": {"ended_at": updates["ended_at"], "status": "completed"}})
     await db.live_status.delete_one({"rider_id": user["id"]})
     session.update(updates)
     return _ride_summary(session, user)
@@ -769,6 +773,139 @@ async def leave_group(ride_id: str, user: Annotated[dict, Depends(current_user)]
     return {"ok": True}
 
 
+@api.post("/groups/{ride_id}/invite", response_model=GroupRide)
+async def invite_more(ride_id: str, body: CreateGroupBody, user: Annotated[dict, Depends(current_user)]):
+    ride = await _load_group(ride_id)
+    if not ride or ride["status"] != "active":
+        raise HTTPException(404, "Group not found")
+    # Only participants can invite others
+    me_part = await db.group_participants.find_one({"ride_id": ride_id, "user_id": user["id"]}, {"_id": 0})
+    if not me_part or me_part["status"] != "joined":
+        raise HTTPException(403, "Join the group first")
+    edges = await db.friends.find({
+        "status": "accepted",
+        "$or": [{"requester_id": user["id"]}, {"addressee_id": user["id"]}],
+    }, {"_id": 0}).to_list(1000)
+    friend_ids = {
+        e["addressee_id"] if e["requester_id"] == user["id"] else e["requester_id"]
+        for e in edges
+    }
+    for uname in body.invite_usernames:
+        target = await db.users.find_one({"username": uname.lower()}, {"_id": 0})
+        if not target or target["id"] == user["id"] or target["id"] not in friend_ids:
+            continue
+        existing = await db.group_participants.find_one({"ride_id": ride_id, "user_id": target["id"]}, {"_id": 0})
+        if existing:
+            # Re-invite people who declined/left
+            if existing["status"] in ("declined", "left"):
+                await db.group_participants.update_one(
+                    {"ride_id": ride_id, "user_id": target["id"]},
+                    {"$set": {"status": "invited", "joined_at": None}},
+                )
+            continue
+        await db.group_participants.insert_one({
+            "id": str(uuid.uuid4()), "ride_id": ride_id, "user_id": target["id"],
+            "status": "invited", "joined_at": None,
+            "on_comms": False, "muted": False, "speaking": False,
+        })
+    await intercom.broadcast(ride_id, {"type": "roster"})
+    return await _build_group(ride)
+
+
+class GroupStartRideBody(BaseModel):
+    title: Optional[str] = None
+
+
+@api.post("/groups/{ride_id}/start-ride")
+async def group_start_ride(ride_id: str, body: GroupStartRideBody, user: Annotated[dict, Depends(current_user)]):
+    ride = await _load_group(ride_id)
+    if not ride or ride["status"] != "active":
+        raise HTTPException(404, "Group not found")
+    part = await db.group_participants.find_one({"ride_id": ride_id, "user_id": user["id"]}, {"_id": 0})
+    if not part or part["status"] != "joined":
+        raise HTTPException(403, "Join the group first")
+    existing = await db.ride_sessions.find_one({"ride_id": ride_id, "rider_id": user["id"], "status": "active"}, {"_id": 0})
+    if existing:
+        return _ride_summary(existing, user)
+    session_id = str(uuid.uuid4())
+    now = now_utc().isoformat()
+    session = {
+        "id": session_id, "ride_id": ride_id, "rider_id": user["id"],
+        "title": body.title or ride["title"], "is_group_ride": True,
+        "livekit_room_name": ride["livekit_room_name"],
+        "distance_km": 0.0, "top_speed_kmh": 0.0, "avg_speed_kmh": 0.0,
+        "duration_seconds": 0, "polyline": [],
+        "started_at": now, "ended_at": None, "status": "active",
+    }
+    await db.ride_sessions.insert_one(session)
+    await intercom.broadcast(ride_id, {"type": "roster"})
+    return _ride_summary(session, user)
+
+
+class CrewMemberRecap(BaseModel):
+    rider: UserPublic
+    distance_km: float
+    top_speed_kmh: float
+    avg_speed_kmh: float
+    duration_seconds: int
+    polyline: List[List[float]] = Field(default_factory=list)
+
+
+class GroupRecap(BaseModel):
+    ride_id: str
+    title: str
+    started_at: str
+    ended_at: Optional[str]
+    crew_total_km: float
+    crew_top_speed_kmh: float
+    crew_avg_speed_kmh: float
+    total_riders: int
+    members: List[CrewMemberRecap]
+
+
+@api.get("/groups/{ride_id}/recap", response_model=GroupRecap)
+async def group_recap(ride_id: str, user: Annotated[dict, Depends(current_user)]):
+    ride = await db.rides.find_one({"id": ride_id, "is_group_ride": True}, {"_id": 0})
+    if not ride:
+        raise HTTPException(404, "Group not found")
+    # Everyone in the room can see the recap
+    part = await db.group_participants.find_one({"ride_id": ride_id, "user_id": user["id"]}, {"_id": 0})
+    if not part:
+        raise HTTPException(403, "Not a participant")
+    sessions = await db.ride_sessions.find({"ride_id": ride_id}, {"_id": 0}).to_list(500)
+    members: List[CrewMemberRecap] = []
+    crew_km = 0.0
+    crew_top = 0.0
+    crew_avg = 0.0
+    for s in sessions:
+        u = await db.users.find_one({"id": s["rider_id"]}, {"_id": 0})
+        if not u:
+            continue
+        members.append(CrewMemberRecap(
+            rider=user_public(u),
+            distance_km=s.get("distance_km", 0.0),
+            top_speed_kmh=s.get("top_speed_kmh", 0.0),
+            avg_speed_kmh=s.get("avg_speed_kmh", 0.0),
+            duration_seconds=s.get("duration_seconds", 0),
+            polyline=s.get("polyline", []),
+        ))
+        crew_km += s.get("distance_km", 0.0)
+        crew_top = max(crew_top, s.get("top_speed_kmh", 0.0))
+        crew_avg += s.get("avg_speed_kmh", 0.0)
+    n = len(members) or 1
+    return GroupRecap(
+        ride_id=ride_id,
+        title=ride["title"],
+        started_at=ride["started_at"],
+        ended_at=ride.get("ended_at"),
+        crew_total_km=round(crew_km, 1),
+        crew_top_speed_kmh=round(crew_top, 1),
+        crew_avg_speed_kmh=round(crew_avg / n, 1),
+        total_riders=len(members),
+        members=members,
+    )
+
+
 # ---------- Intercom WebSocket (presence signalling — real voice needs LiveKit) ----------
 class IntercomHub:
     def __init__(self) -> None:
@@ -787,6 +924,19 @@ class IntercomHub:
         for ws in list(self.rooms.get(room, [])):
             try:
                 await ws.send_text(json.dumps(payload))
+            except Exception:
+                dead.append(ws)
+        for d in dead:
+            self.leave(room, d)
+
+    async def broadcast_except(self, room: str, exclude: WebSocket, payload: dict) -> None:
+        dead: list[WebSocket] = []
+        text = json.dumps(payload)
+        for ws in list(self.rooms.get(room, [])):
+            if ws is exclude:
+                continue
+            try:
+                await ws.send_text(text)
             except Exception:
                 dead.append(ws)
         for d in dead:
@@ -841,6 +991,17 @@ async def ws_intercom(websocket: WebSocket, ride_id: str, token: str = ""):
                     {"ride_id": ride_id, "user_id": user["id"]}, {"$set": {"speaking": sp}}
                 )
                 await intercom.broadcast(ride_id, {"type": "speaking", "user_id": user["id"], "speaking": sp})
+            elif t == "audio":
+                # Push-to-talk audio clip: server relays the base64 blob to other participants.
+                # Payload: { type: "audio", data: "<base64>", mime: "audio/webm;codecs=opus" }
+                await intercom.broadcast_except(ride_id, websocket, {
+                    "type": "audio",
+                    "user_id": user["id"],
+                    "username": user["username"],
+                    "display_name": user.get("display_name") or user["username"],
+                    "data": msg.get("data"),
+                    "mime": msg.get("mime", "audio/webm"),
+                })
     except WebSocketDisconnect:
         pass
     finally:
