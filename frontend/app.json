@@ -1,24 +1,40 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
+    "name": "BikeFriends",
+    "slug": "bikefriends",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
-    "userInterfaceStyle": "automatic",
+    "scheme": "bikefriends",
+    "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.ridetogetherapp.q1dnkf"
+      "bundleIdentifier": "com.emergent.ridetogetherapp.q1dnkf",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Track your ride route and speed live.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Keep tracking your ride while phone is locked.",
+        "NSMicrophoneUsageDescription": "Talk to friends over the group ride intercom.",
+        "NSBluetoothAlwaysUsageDescription": "Route intercom audio to your Bluetooth helmet.",
+        "UIBackgroundModes": ["location", "audio"]
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000000"
+        "backgroundColor": "#0D0E11"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.emergent.ridetogetherapp.q1dnkf"
+      "package": "com.emergent.ridetogetherapp.q1dnkf",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "RECORD_AUDIO",
+        "BLUETOOTH_CONNECT"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -27,13 +43,15 @@
     },
     "plugins": [
       "expo-router",
+      "expo-location",
+      "expo-secure-store",
       [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-image.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#000000"
+          "backgroundColor": "#0D0E11"
         }
       ]
     ],
