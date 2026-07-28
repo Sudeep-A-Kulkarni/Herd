@@ -532,7 +532,8 @@ async def end_ride(session_id: str, body: EndRideBody, user: Annotated[dict, Dep
     parent = await db.rides.find_one({"id": session["ride_id"]}, {"_id": 0})
     if parent and not parent.get("is_group_ride"):
         await db.rides.update_one({"id": session["ride_id"]}, {"$set": {"ended_at": updates["ended_at"], "status": "completed"}})
-    await db.live_status.delete_one({"rider_id": user["id"]})
+    # Only clear the rider's live_status if it still points at THIS ending session.
+    await db.live_status.delete_one({"rider_id": user["id"], "ride_session_id": session_id})
     session.update(updates)
     return _ride_summary(session, user)
 
@@ -540,7 +541,9 @@ async def end_ride(session_id: str, body: EndRideBody, user: Annotated[dict, Dep
 @api.get("/rides/active", response_model=Optional[RideSummary])
 async def active_ride(user: Annotated[dict, Depends(current_user)]):
     session = await db.ride_sessions.find_one(
-        {"rider_id": user["id"], "status": "active"}, {"_id": 0}
+        {"rider_id": user["id"], "status": "active"},
+        {"_id": 0},
+        sort=[("started_at", -1)],
     )
     if not session:
         return None
