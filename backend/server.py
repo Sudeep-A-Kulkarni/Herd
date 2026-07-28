@@ -15,9 +15,11 @@ from typing import Annotated, Optional, List, Literal
 import bcrypt
 import jwt
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Query
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import json
+from collections import defaultdict
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 
@@ -170,6 +172,30 @@ class LeaderboardEntry(BaseModel):
     total_km: float
     top_speed_kmh: float
     total_rides: int
+
+
+class CreateGroupBody(BaseModel):
+    title: str = "Group Ride"
+    invite_usernames: List[str] = Field(default_factory=list)
+
+
+class GroupParticipant(BaseModel):
+    user: UserPublic
+    status: str  # invited | joined | declined | left
+    on_comms: bool = False
+    muted: bool = False
+    speaking: bool = False
+    joined_at: Optional[str] = None
+
+
+class GroupRide(BaseModel):
+    ride_id: str
+    title: str
+    owner: UserPublic
+    livekit_room_name: str
+    started_at: str
+    status: str
+    participants: List[GroupParticipant]
 
 
 # ---------- Serializers ----------
@@ -594,6 +620,236 @@ async def livekit_token(user: Annotated[dict, Depends(current_user)]):
         "token": f"mock-token-for-{user['username']}",
         "mocked": True,
     }
+
+
+# ---------- Group rides ----------
+async def _load_group(ride_id: str) -> Optional[dict]:
+    ride = await db.rides.find_one({"id": ride_id, "is_group_ride": True}, {"_id": 0})
+    return ride
+
+
+async def _build_group(ride: dict) -> GroupRide:
+    owner = await db.users.find_one({"id": ride["owner_id"]}, {"_id": 0})
+    parts_docs = await db.group_participants.find({"ride_id": ride["id"]}, {"_id": 0}).to_list(200)
+    participants: List[GroupParticipant] = []
+    for p in parts_docs:
+        u = await db.users.find_one({"id": p["user_id"]}, {"_id": 0})
+        if not u:
+            continue
+        participants.append(GroupParticipant(
+            user=user_public(u),
+            status=p["status"],
+            on_comms=p.get("on_comms", False),
+            muted=p.get("muted", False),
+            speaking=p.get("speaking", False),
+            joined_at=p.get("joined_at"),
+        ))
+    return GroupRide(
+        ride_id=ride["id"],
+        title=ride["title"],
+        owner=user_public(owner),
+        livekit_room_name=ride["livekit_room_name"],
+        started_at=ride["started_at"],
+        status=ride["status"],
+        participants=participants,
+    )
+
+
+@api.post("/groups", response_model=GroupRide)
+async def create_group(body: CreateGroupBody, user: Annotated[dict, Depends(current_user)]):
+    ride_id = str(uuid.uuid4())
+    now = now_utc().isoformat()
+    room = f"ride-{ride_id[:8]}"
+    ride_doc = {
+        "id": ride_id, "owner_id": user["id"], "title": body.title,
+        "is_group_ride": True, "livekit_room_name": room,
+        "started_at": now, "ended_at": None, "status": "active",
+    }
+    await db.rides.insert_one(ride_doc)
+    # Owner auto-joins
+    await db.group_participants.insert_one({
+        "id": str(uuid.uuid4()), "ride_id": ride_id, "user_id": user["id"],
+        "status": "joined", "joined_at": now, "on_comms": False, "muted": False, "speaking": False,
+    })
+    # Invite the listed usernames (only accepted friends)
+    edges = await db.friends.find({
+        "status": "accepted",
+        "$or": [{"requester_id": user["id"]}, {"addressee_id": user["id"]}],
+    }, {"_id": 0}).to_list(1000)
+    friend_ids = {
+        e["addressee_id"] if e["requester_id"] == user["id"] else e["requester_id"]
+        for e in edges
+    }
+    for uname in body.invite_usernames:
+        target = await db.users.find_one({"username": uname.lower()}, {"_id": 0})
+        if not target or target["id"] == user["id"] or target["id"] not in friend_ids:
+            continue
+        await db.group_participants.insert_one({
+            "id": str(uuid.uuid4()), "ride_id": ride_id, "user_id": target["id"],
+            "status": "invited", "joined_at": None,
+            "on_comms": False, "muted": False, "speaking": False,
+        })
+    return await _build_group(ride_doc)
+
+
+@api.get("/groups/invitations", response_model=List[GroupRide])
+async def my_invitations(user: Annotated[dict, Depends(current_user)]):
+    parts = await db.group_participants.find(
+        {"user_id": user["id"], "status": "invited"}, {"_id": 0}
+    ).to_list(100)
+    out: List[GroupRide] = []
+    for p in parts:
+        ride = await _load_group(p["ride_id"])
+        if ride and ride["status"] == "active":
+            out.append(await _build_group(ride))
+    return out
+
+
+@api.get("/groups/mine", response_model=List[GroupRide])
+async def my_active_groups(user: Annotated[dict, Depends(current_user)]):
+    parts = await db.group_participants.find(
+        {"user_id": user["id"], "status": "joined"}, {"_id": 0}
+    ).to_list(100)
+    out: List[GroupRide] = []
+    for p in parts:
+        ride = await _load_group(p["ride_id"])
+        if ride and ride["status"] == "active":
+            out.append(await _build_group(ride))
+    return out
+
+
+@api.get("/groups/{ride_id}", response_model=GroupRide)
+async def get_group(ride_id: str, user: Annotated[dict, Depends(current_user)]):
+    ride = await _load_group(ride_id)
+    if not ride:
+        raise HTTPException(404, "Group not found")
+    return await _build_group(ride)
+
+
+@api.post("/groups/{ride_id}/join", response_model=GroupRide)
+async def join_group(ride_id: str, user: Annotated[dict, Depends(current_user)]):
+    ride = await _load_group(ride_id)
+    if not ride or ride["status"] != "active":
+        raise HTTPException(404, "Group not found")
+    part = await db.group_participants.find_one({"ride_id": ride_id, "user_id": user["id"]}, {"_id": 0})
+    if not part:
+        raise HTTPException(403, "Not invited")
+    await db.group_participants.update_one(
+        {"ride_id": ride_id, "user_id": user["id"]},
+        {"$set": {"status": "joined", "joined_at": now_utc().isoformat()}},
+    )
+    await intercom.broadcast(ride_id, {"type": "roster"})
+    return await _build_group(ride)
+
+
+@api.post("/groups/{ride_id}/decline")
+async def decline_group(ride_id: str, user: Annotated[dict, Depends(current_user)]):
+    await db.group_participants.update_one(
+        {"ride_id": ride_id, "user_id": user["id"]},
+        {"$set": {"status": "declined"}},
+    )
+    return {"ok": True}
+
+
+@api.post("/groups/{ride_id}/leave")
+async def leave_group(ride_id: str, user: Annotated[dict, Depends(current_user)]):
+    ride = await _load_group(ride_id)
+    if not ride:
+        raise HTTPException(404, "Group not found")
+    await db.group_participants.update_one(
+        {"ride_id": ride_id, "user_id": user["id"]},
+        {"$set": {"status": "left", "on_comms": False}},
+    )
+    # Owner leaving ends the group
+    if ride["owner_id"] == user["id"]:
+        await db.rides.update_one({"id": ride_id}, {"$set": {"status": "completed", "ended_at": now_utc().isoformat()}})
+        await intercom.broadcast(ride_id, {"type": "ended"})
+    else:
+        await intercom.broadcast(ride_id, {"type": "roster"})
+    return {"ok": True}
+
+
+# ---------- Intercom WebSocket (presence signalling — real voice needs LiveKit) ----------
+class IntercomHub:
+    def __init__(self) -> None:
+        self.rooms: dict[str, list[WebSocket]] = defaultdict(list)
+
+    async def join(self, room: str, ws: WebSocket) -> None:
+        await ws.accept()
+        self.rooms[room].append(ws)
+
+    def leave(self, room: str, ws: WebSocket) -> None:
+        if ws in self.rooms.get(room, []):
+            self.rooms[room].remove(ws)
+
+    async def broadcast(self, room: str, payload: dict) -> None:
+        dead: list[WebSocket] = []
+        for ws in list(self.rooms.get(room, [])):
+            try:
+                await ws.send_text(json.dumps(payload))
+            except Exception:
+                dead.append(ws)
+        for d in dead:
+            self.leave(room, d)
+
+
+intercom = IntercomHub()
+
+
+async def _ws_user(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        return None
+    return await db.users.find_one({"id": payload.get("sub")}, {"_id": 0})
+
+
+@app.websocket("/api/ws/intercom/{ride_id}")
+async def ws_intercom(websocket: WebSocket, ride_id: str, token: str = ""):
+    user = await _ws_user(token)
+    if not user:
+        await websocket.close(code=4401)
+        return
+    part = await db.group_participants.find_one({"ride_id": ride_id, "user_id": user["id"]}, {"_id": 0})
+    if not part or part["status"] not in ("joined",):
+        await websocket.close(code=4403)
+        return
+    await intercom.join(ride_id, websocket)
+    # Broadcast join
+    await db.group_participants.update_one(
+        {"ride_id": ride_id, "user_id": user["id"]},
+        {"$set": {"on_comms": True}},
+    )
+    await intercom.broadcast(ride_id, {"type": "presence", "user_id": user["id"], "on_comms": True})
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            t = msg.get("type")
+            if t == "mute":
+                muted = bool(msg.get("muted", False))
+                await db.group_participants.update_one(
+                    {"ride_id": ride_id, "user_id": user["id"]}, {"$set": {"muted": muted}}
+                )
+                await intercom.broadcast(ride_id, {"type": "mute", "user_id": user["id"], "muted": muted})
+            elif t == "speaking":
+                sp = bool(msg.get("speaking", False))
+                await db.group_participants.update_one(
+                    {"ride_id": ride_id, "user_id": user["id"]}, {"$set": {"speaking": sp}}
+                )
+                await intercom.broadcast(ride_id, {"type": "speaking", "user_id": user["id"], "speaking": sp})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        intercom.leave(ride_id, websocket)
+        await db.group_participants.update_one(
+            {"ride_id": ride_id, "user_id": user["id"]},
+            {"$set": {"on_comms": False, "speaking": False}},
+        )
+        await intercom.broadcast(ride_id, {"type": "presence", "user_id": user["id"], "on_comms": False})
 
 
 @api.get("/")

@@ -83,3 +83,22 @@ export type LeaderboardEntry = {
   top_speed_kmh: number;
   total_rides: number;
 };
+
+export type GroupParticipant = {
+  user: UserPublic;
+  status: "invited" | "joined" | "declined" | "left";
+  on_comms: boolean;
+  muted: boolean;
+  speaking: boolean;
+  joined_at?: string | null;
+};
+
+export type GroupRide = {
+  ride_id: string;
+  title: string;
+  owner: UserPublic;
+  livekit_room_name: string;
+  started_at: string;
+  status: string;
+  participants: GroupParticipant[];
+};

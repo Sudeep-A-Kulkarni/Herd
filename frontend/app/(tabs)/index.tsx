@@ -5,7 +5,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
-import { api, FriendItem, RideSummary } from "@/src/lib/api";
+import { api, FriendItem, RideSummary, GroupRide } from "@/src/lib/api";
 import { useAuth } from "@/src/lib/auth";
 import { theme } from "@/src/lib/theme";
 import { Badge } from "@/src/components/ui";
@@ -16,22 +16,38 @@ export default function Home() {
   const router = useRouter();
   const [friends, setFriends] = useState<FriendItem[]>([]);
   const [rides, setRides] = useState<RideSummary[]>([]);
+  const [invitations, setInvitations] = useState<GroupRide[]>([]);
+  const [activeGroups, setActiveGroups] = useState<GroupRide[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [f, r] = await Promise.all([
+      const [f, r, inv, mine] = await Promise.all([
         api.get<FriendItem[]>("/friends"),
         api.get<RideSummary[]>("/rides/mine"),
+        api.get<GroupRide[]>("/groups/invitations"),
+        api.get<GroupRide[]>("/groups/mine"),
       ]);
       setFriends(f);
       setRides(r);
+      setInvitations(inv);
+      setActiveGroups(mine);
     } catch { /* ignore */ }
     finally { setRefreshing(false); }
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const acceptInvite = async (rideId: string) => {
+    try {
+      await api.post(`/groups/${rideId}/join`);
+      router.push(`/group/${rideId}`);
+    } catch { /* ignore */ }
+  };
+  const declineInvite = async (rideId: string) => {
+    try { await api.post(`/groups/${rideId}/decline`); load(); } catch { /* ignore */ }
+  };
 
   const riding = friends.filter((f) => f.status === "accepted" && f.is_riding);
   const accepted = friends.filter((f) => f.status === "accepted");
@@ -43,7 +59,7 @@ export default function Home() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} tintColor={theme.color.brand} />}
       >
         <View style={styles.header}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={styles.hello}>Hey, {user?.display_name?.split(" ")[0] || "Rider"}</Text>
             <Text style={styles.subtitle}>Ready to hit the road?</Text>
           </View>
@@ -52,10 +68,85 @@ export default function Home() {
             style={styles.startBtn}
             onPress={() => router.push("/(tabs)/ride")}
           >
-            <Ionicons name="play" size={18} color={theme.color.onBrand} />
-            <Text style={styles.startBtnText}>Start Ride</Text>
+            <Ionicons name="play" size={16} color={theme.color.onBrand} />
+            <Text style={styles.startBtnText}>Solo</Text>
           </Pressable>
         </View>
+
+        <Pressable
+          testID="home-create-group-button"
+          style={styles.groupCta}
+          onPress={() => router.push("/group/create")}
+        >
+          <View style={styles.groupCtaIcon}>
+            <Ionicons name="radio" size={22} color={theme.color.onBrand} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.groupCtaTitle}>Start a Group Ride</Text>
+            <Text style={styles.groupCtaSub}>Invite friends · Voice intercom · No distance limit</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={theme.color.onBrand} />
+        </Pressable>
+
+        {invitations.length > 0 && (
+          <>
+            <SectionHeader title="Invitations" count={invitations.length} />
+            <View style={{ gap: theme.space.sm }}>
+              {invitations.map((g) => (
+                <View key={g.ride_id} style={styles.inviteCard} testID={`home-invite-${g.ride_id}`}>
+                  <View style={styles.inviteIcon}>
+                    <Ionicons name="megaphone" size={18} color={theme.color.brand} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inviteTitle}>{g.title}</Text>
+                    <Text style={styles.inviteMeta}>from {g.owner.display_name}</Text>
+                  </View>
+                  <Pressable
+                    testID={`home-invite-accept-${g.ride_id}`}
+                    style={styles.inviteAccept}
+                    onPress={() => acceptInvite(g.ride_id)}
+                  >
+                    <Text style={styles.inviteAcceptText}>Join</Text>
+                  </Pressable>
+                  <Pressable
+                    testID={`home-invite-decline-${g.ride_id}`}
+                    style={styles.inviteDecline}
+                    onPress={() => declineInvite(g.ride_id)}
+                  >
+                    <Ionicons name="close" size={16} color={theme.color.text} />
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          </>
+        )}
+
+        {activeGroups.length > 0 && (
+          <>
+            <SectionHeader title="Your active groups" count={activeGroups.length} />
+            <View style={{ gap: theme.space.sm }}>
+              {activeGroups.map((g) => (
+                <Pressable
+                  key={g.ride_id}
+                  testID={`home-active-group-${g.ride_id}`}
+                  style={styles.activeGroupRow}
+                  onPress={() => router.push(`/group/${g.ride_id}`)}
+                >
+                  <View style={styles.activeGroupIcon}>
+                    <Ionicons name="radio" size={18} color={theme.color.success} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inviteTitle}>{g.title}</Text>
+                    <Text style={styles.inviteMeta}>
+                      {g.participants.filter((p) => p.status === "joined").length} on comms
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={theme.color.textMuted} />
+                </Pressable>
+              ))}
+            </View>
+          </>
+        )}
 
         <SectionHeader title="Live now" count={riding.length} />
         {riding.length === 0 ? (
@@ -153,10 +244,51 @@ const styles = StyleSheet.create({
   subtitle: { color: theme.color.textMuted, marginTop: 2 },
   startBtn: {
     flexDirection: "row", alignItems: "center", gap: 6,
-    backgroundColor: theme.color.brand, paddingHorizontal: theme.space.lg, paddingVertical: 10,
+    backgroundColor: theme.color.surface3, paddingHorizontal: theme.space.md, paddingVertical: 10,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1, borderColor: theme.color.border,
+  },
+  startBtnText: { color: theme.color.text, fontWeight: "800", fontSize: 13 },
+  groupCta: {
+    flexDirection: "row", alignItems: "center", gap: theme.space.md,
+    backgroundColor: theme.color.brand, borderRadius: theme.radius.lg,
+    padding: theme.space.md, marginTop: theme.space.md,
+  },
+  groupCtaIcon: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(0,0,0,0.15)",
+    alignItems: "center", justifyContent: "center",
+  },
+  groupCtaTitle: { color: theme.color.onBrand, fontWeight: "900", fontSize: 15, letterSpacing: 0.2 },
+  groupCtaSub: { color: "rgba(0,0,0,0.75)", fontSize: 11, marginTop: 2, fontWeight: "600" },
+  inviteCard: {
+    flexDirection: "row", alignItems: "center", gap: theme.space.md,
+    backgroundColor: theme.color.brandTint, borderRadius: theme.radius.md, padding: theme.space.md,
+    borderWidth: 1, borderColor: theme.color.brand,
+  },
+  inviteIcon: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: theme.color.surface2,
+    alignItems: "center", justifyContent: "center",
+  },
+  inviteTitle: { color: theme.color.text, fontWeight: "700", fontSize: 14 },
+  inviteMeta: { color: theme.color.textMuted, fontSize: 12, marginTop: 2 },
+  inviteAccept: {
+    backgroundColor: theme.color.brand, paddingHorizontal: theme.space.md, paddingVertical: 8,
     borderRadius: theme.radius.pill,
   },
-  startBtnText: { color: theme.color.onBrand, fontWeight: "800", fontSize: 14 },
+  inviteAcceptText: { color: theme.color.onBrand, fontWeight: "800", fontSize: 13 },
+  inviteDecline: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: theme.color.surface3,
+    alignItems: "center", justifyContent: "center",
+  },
+  activeGroupRow: {
+    flexDirection: "row", alignItems: "center", gap: theme.space.md,
+    backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, padding: theme.space.md,
+    borderWidth: 1, borderColor: theme.color.success,
+  },
+  activeGroupIcon: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: theme.color.success + "22",
+    alignItems: "center", justifyContent: "center",
+  },
   sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: theme.space.lg },
   sectionTitle: { color: theme.color.text, fontSize: 18, fontWeight: "700" },
   sectionCount: { color: theme.color.textMuted, fontSize: 13 },
