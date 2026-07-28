@@ -5,11 +5,20 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
-import { api, GroupRide, GroupParticipant, FriendItem, RideSummary } from "@/src/lib/api";
+import { api, GroupRide, GroupParticipant, FriendItem, RideSummary, LiveRider } from "@/src/lib/api";
 import { useAuth } from "@/src/lib/auth";
 import { useIntercom } from "@/src/lib/intercom";
 import { useRideTracker, formatDuration } from "@/src/lib/ride-tracker";
+import { RouteMap, MapRider } from "@/src/components/RouteMap";
 import { theme } from "@/src/lib/theme";
+
+// Deterministic bright color per user id for map markers
+function colorFor(id: string): string {
+  const palette = ["#FF6B00", "#00E676", "#00AEEF", "#FFD600", "#FF3B7F", "#B388FF", "#00FFC6", "#FF8A65"];
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return palette[h % palette.length];
+}
 
 export default function GroupRoom() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -22,6 +31,7 @@ export default function GroupRoom() {
   const [startingRide, setStartingRide] = useState(false);
   const [endingRide, setEndingRide] = useState(false);
   const [rideError, setRideError] = useState<string | null>(null);
+  const [livePositions, setLivePositions] = useState<LiveRider[]>([]);
   const intercom = useIntercom(id ?? null);
   const tracker = useRideTracker();
 
@@ -40,6 +50,21 @@ export default function GroupRoom() {
   }, [id]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  // Poll live positions every 4s (only while the room is mounted).
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    const pull = async () => {
+      try {
+        const rows = await api.get<LiveRider[]>(`/groups/${id}/live-positions`);
+        if (!cancelled) setLivePositions(rows);
+      } catch { /* ignore */ }
+    };
+    pull();
+    const iv = setInterval(pull, 4000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [id]);
 
   // Refresh roster on server events
   useEffect(() => {
@@ -133,6 +158,25 @@ export default function GroupRoom() {
   const invitedUsernames = new Set(group.participants.map((p) => p.user.username));
   const stats = tracker.stats;
 
+  // Merge my in-flight GPS with server-pushed positions for a smooth self-marker
+  const mapRiders: MapRider[] = livePositions.map((l) => ({
+    id: l.rider.id,
+    lat: l.lat, lng: l.lng,
+    label: `${l.rider.display_name.split(" ")[0]} · ${Math.round(l.speed_kmh)} km/h`,
+    color: colorFor(l.rider.id),
+    self: l.rider.id === user?.id,
+  }));
+  if (tracker.tracking && stats.points.length > 0 && user) {
+    const last = stats.points[stats.points.length - 1];
+    const meIdx = mapRiders.findIndex((r) => r.id === user.id);
+    const meRider: MapRider = {
+      id: user.id, lat: last.lat, lng: last.lng,
+      label: `You · ${Math.round(last.speedKmh)} km/h`,
+      color: colorFor(user.id), self: true,
+    };
+    if (meIdx >= 0) mapRiders[meIdx] = meRider; else mapRiders.push(meRider);
+  }
+
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]} testID="group-room-screen">
       <View style={styles.header}>
@@ -149,6 +193,37 @@ export default function GroupRoom() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
+        {/* Live crew map */}
+        <View style={styles.liveMapCard} testID="group-live-map">
+          <View style={styles.liveMapHead}>
+            <View style={styles.liveMapHeadLeft}>
+              <Ionicons name="location" size={16} color={theme.color.brand} />
+              <Text style={styles.cardTitle}>Live map</Text>
+            </View>
+            <View style={styles.livePill}>
+              <View style={styles.livePillDot} />
+              <Text style={styles.livePillText}>{mapRiders.length} live</Text>
+            </View>
+          </View>
+          <View style={styles.mapBox}>
+            {mapRiders.length > 0 ? (
+              <RouteMap
+                riders={mapRiders}
+                polyline={tracker.tracking ? stats.polyline : []}
+                fitAll
+                height="100%"
+                testID="group-live-map-canvas"
+              />
+            ) : (
+              <View style={styles.mapEmpty}>
+                <Ionicons name="navigate-outline" size={26} color={theme.color.textDim} />
+                <Text style={styles.mapEmptyTitle}>No live riders yet</Text>
+                <Text style={styles.mapEmptySub}>Positions appear here once someone taps "Start my ride"</Text>
+              </View>
+            )}
+          </View>
+        </View>
+
         {/* Intercom card */}
         <View style={styles.commsCard} testID="group-intercom-card">
           <View style={styles.commsHeader}>
@@ -510,6 +585,27 @@ const styles = StyleSheet.create({
   headerTitle: { color: theme.color.text, fontSize: 17, fontWeight: "800" },
   headerSub: { color: theme.color.textMuted, fontSize: 11, marginTop: 2 },
   content: { paddingHorizontal: theme.space.lg, paddingBottom: 130, gap: theme.space.md },
+  liveMapCard: {
+    backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg,
+    padding: theme.space.md, gap: theme.space.sm,
+    borderWidth: 1, borderColor: theme.color.border,
+  },
+  liveMapHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  liveMapHeadLeft: { flexDirection: "row", alignItems: "center", gap: 6 },
+  livePill: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: theme.color.success + "22", borderColor: theme.color.success, borderWidth: 1,
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: theme.radius.pill,
+  },
+  livePillDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: theme.color.success },
+  livePillText: { color: theme.color.success, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
+  mapBox: {
+    height: 200, borderRadius: theme.radius.md, overflow: "hidden",
+    backgroundColor: theme.color.surface,
+  },
+  mapEmpty: { flex: 1, alignItems: "center", justifyContent: "center", gap: 6, padding: theme.space.md },
+  mapEmptyTitle: { color: theme.color.text, fontWeight: "700", fontSize: 13 },
+  mapEmptySub: { color: theme.color.textMuted, fontSize: 11, textAlign: "center" },
   commsCard: {
     backgroundColor: theme.color.surface2, borderRadius: theme.radius.lg,
     padding: theme.space.lg, gap: theme.space.md,

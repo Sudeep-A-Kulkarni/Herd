@@ -121,3 +121,12 @@ export type GroupRecap = {
     polyline: [number, number][];
   }[];
 };
+
+export type LiveRider = {
+  rider: UserPublic;
+  lat: number;
+  lng: number;
+  speed_kmh: number;
+  is_on_comms: boolean;
+  updated_at: string;
+};

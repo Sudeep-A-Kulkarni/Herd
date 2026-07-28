@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 3 — Shared LIVE MAP + Emergent-managed push notifications. Backend: 9/9 new pytest cases green (live-positions x4, register-push x3, push side-effects x2). Full regression: 31/34 pass — 3 failures are pre-existing seed-drift/test-ordering issues (see rca), NOT iteration-3 bugs. Frontend: Signed in as rider@bike.com → home shows Live Test group in 'Your active groups' → opened Live Test → Live map card renders AT THE TOP with 'Live map' header + '3 live' pill + Leaflet map inside 200px box + 3 colored markers with speed labels ('Alex · 72 km/h', 'Maria · 58 km/h', 'Jay · 95 km/h'). Polling confirmed at exactly 4 s intervals (4 hits over 13 s). Pushed a fresh /api/live-status for Jay with speed 111 km/h — map iframe reflected 'Jay · 111 km/h' within ~5 s (poll picked it up on the next tick). All regression cards (Intercom, My ride, Riders, Invite more, Live recap, End group ride) still render. Push notifications native-only code paths present in _layout.tsx and no runtime crash on web load. Deprecated packages / expo-notifications web warnings noted below.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/rides/{id}/end", "issue": "Blindly deletes ALL rows in live_status for the rider regardless of ride_session_id. If a rider has TWO active-session rows (e.g., seeded group session + a solo /rides/start), ending the solo wipes their group live-status too. Reference: /app/backend/server.py:535. This is what caused seed drift during regression run (Alex was missing from Live Test live-positions after test_ride_solo_start_and_end ran)."},
+      {"endpoint": "GET /api/rides/active", "issue": "Returns FIRST active session found for rider regardless of which was just started. Because seeded 'Live Test' leaves rider@bike.com with an already-active group session, a fresh POST /rides/start returns a new session id but /rides/active still surfaces the older seeded one. Consider ordering by started_at desc or filtering by is_group_ride=false when caller is starting a solo ride. Reference: /app/backend/server.py:540-547."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo-notifications on web", "issue": "Warning: '[expo-notifications] Listening to push token changes is not yet fully supported on web. Adding a listener will have no effect.' — expected on web preview; native-only code paths gated correctly in /app/frontend/app/_layout.tsx (Platform.OS !== 'web' checks). Not a bug; heads-up only."},
+      {"component": "props.pointerEvents", "issue": "Pre-existing deprecation warning 'props.pointerEvents is deprecated. Use style.pointerEvents' still recurs on every screen (carried over from iteration 2). Should be migrated in the shared component that emits it."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/backend/tests/test_bikefriends.py",
+    "/app/test_reports/pytest/iteration_3.xml",
+    "/app/test_reports/pytest/iteration_3_full.xml"
+  ],
+  "action_items": [
+    "Scope live_status cleanup on POST /rides/{id}/end to the ended ride_session_id, e.g. `db.live_status.delete_one({'rider_id': user['id'], 'ride_session_id': session_id})`. This will keep group-ride live positions intact when a rider ends a concurrent solo ride, and stop tests from polluting the Live Test seed.",
+    "Make GET /rides/active pick the MOST RECENTLY started active session (sort by started_at desc) so a fresh POST /rides/start is what /rides/active surfaces.",
+    "Optional: expose a lightweight admin re-seed endpoint or a pytest fixture that resets the 'Live Test' live_status rows before every regression pass so seed drift can't produce spurious failures (test_participant_gets_positions and test_group_recap_sunset_cruise both need this).",
+    "Follow up on the still-outstanding props.pointerEvents deprecation from iteration 2."
+  ],
+  "critical_code_review_comments": [
+    "send_push helper wraps upstream errors in try/except and only logs — so a placeholder EMERGENT_PUSH_KEY correctly does NOT break /groups or /groups/{id}/invite. Verified end-to-end.",
+    "/api/register-push correctly bubbles 401 from the upstream as HTTP 500 with 'EMERGENT_PUSH_KEY missing or invalid' — matches the spec.",
+    "group_live_positions is participant-gated (403 for non-joined), and correctly filters live_status rows by matching {rider_id -> session_id -> ride_id}. No leakage across rides.",
+    "Frontend polls GET /groups/{id}/live-positions at a clean 4-second cadence (measured: 1s, 5s, 9s, 13s), and the poll continues while the group screen is mounted, cancelled on unmount.",
+    "app/_layout.tsx correctly gates all native-only calls (setNotificationHandler, setNotificationChannelAsync, addNotificationResponseReceivedListener, getLastNotificationResponseAsync, openSettings) behind Platform.OS checks. No runtime crash on web.",
+    "RouteMap correctly renders inside an iframe (Leaflet) — verified 3 colored markers with 'Name · SPEED km/h' labels visible."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3.py (new — 9 iteration-3 tests)"
+  ],
+  "success_rate": {
+    "backend": "iteration-3 only: 100% (9/9). Full suite: 91% (31/34) — 3 failures traced to seed drift, not to iteration-3 changes.",
+    "frontend": "100% — Live map card renders, 4s polling verified, 5s propagation verified, all regression cards visible, sign-in → home → group room flow all green."
+  },
+  "seed_data_creation": "Restored rider@bike.com (throttle) live_status row that had been wiped by a previous test run's POST /rides/end. Live Test ride_id remains 890a8409-cb96-41cd-9ed4-d8c065c94e46 with 3 joined participants (throttle/maria_moto/jay_speed), 3 active group ride_sessions, and 3 live_status rows in SF (lat ~37.77, lng ~-122.42). NOTE: my polling test overwrote Jay's live_status with lat=37.789, lng=-122.401, speed_kmh=111.0. If a future run needs the pristine seed (speed=95, lat=37.769, lng=-122.426), it must reset that row.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration-3 features are green. When running the FULL pytest regression, expect 3 known failures that are NOT feature bugs: (1) test_ride_solo_start_and_end — /rides/active returns the seeded active group session for rider; (2) test_group_recap_sunset_cruise — total_riders drifts to 4 because a prior TEST_ artifact was joined into ride_id 80b88d0e-7a49-48da-aada-1161310a00a5; (3) test_participant_gets_positions — Alex's live_status is deleted every time a rider@bike.com solo ride ends (see minor backend issue #1). Either fix the root cause in server.py:535 (scope live_status delete by ride_session_id) or wrap each affected test in a seed-restore fixture. To manually reset Live Test seed use the /app/scripts folder or the motor snippet in this session's history.",
+  "rca_of_issue": "Two related latent bugs in server.py cause test pollution & seed drift: (A) end_ride at line 535 does `db.live_status.delete_one({'rider_id': user['id']})` — this deletes the rider's live_status document without matching on session id, so any concurrent live_status row (e.g. the seeded Live Test group session) is destroyed when the same rider ends any OTHER solo session; that's why test_participant_gets_positions returned only 2 riders after a preceding solo-ride test. (B) /rides/active at line 542 uses find_one without ordering, so an old already-active group session shadows a newly-started solo session — that's why test_ride_solo_start_and_end asserts the wrong id. Neither bug was introduced in iteration 3; they were exposed by iteration-3 tests because they now rely on a stable 'Live Test' seed."
+}

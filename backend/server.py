@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional, List, Literal
 
 import bcrypt
+import httpx
 import jwt
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect
@@ -39,8 +40,35 @@ app = FastAPI(title="BikeFriends API")
 api = APIRouter(prefix="/api")
 bearer = HTTPBearer(auto_error=False)
 
+# ---------- Emergent Push (SuprSend relay) ----------
+PUSH_BASE_URL = "https://integrations.emergentagent.com"
+PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
+_push_client = httpx.AsyncClient(
+    base_url=PUSH_BASE_URL,
+    headers={"X-Push-Key": PUSH_KEY},
+    timeout=10.0,
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("bikefriends")
+
+
+async def send_push(recipients: list[str], data: dict, idempotency_key: Optional[str] = None) -> None:
+    if not recipients:
+        return
+    if "title" not in data or "message" not in data:
+        raise ValueError("data must include title and message")
+    for chunk_start in range(0, len(recipients), 100):
+        chunk = recipients[chunk_start:chunk_start + 100]
+        payload: dict = {"recipients": chunk, "data": data}
+        if idempotency_key:
+            payload["$idempotency_key"] = idempotency_key
+        try:
+            resp = await _push_client.post("/api/v1/push/trigger", json=payload)
+            if resp.status_code >= 400:
+                logger.warning("push send failed (%s): %s", resp.status_code, resp.text[:200])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("push send exception: %s", e)
 
 
 # ---------- Utils ----------
@@ -148,6 +176,20 @@ class LiveStatusBody(BaseModel):
     lng: float
     speed_kmh: float
     is_on_comms: bool = False
+
+
+class RegisterPushBody(BaseModel):
+    platform: str  # "android" | "ios"
+    device_token: str
+
+
+class LiveRider(BaseModel):
+    rider: UserPublic
+    lat: float
+    lng: float
+    speed_kmh: float
+    is_on_comms: bool
+    updated_at: str
 
 
 class RideSummary(BaseModel):
@@ -576,6 +618,62 @@ async def friends_live_status(user: Annotated[dict, Depends(current_user)]):
     return out
 
 
+@api.get("/groups/{ride_id}/live-positions", response_model=List[LiveRider])
+async def group_live_positions(ride_id: str, user: Annotated[dict, Depends(current_user)]):
+    part = await db.group_participants.find_one({"ride_id": ride_id, "user_id": user["id"]}, {"_id": 0})
+    if not part:
+        raise HTTPException(403, "Not a participant")
+    # Everyone currently in this group session
+    parts = await db.group_participants.find(
+        {"ride_id": ride_id, "status": "joined"}, {"_id": 0}
+    ).to_list(500)
+    rider_ids = [p["user_id"] for p in parts]
+    if not rider_ids:
+        return []
+    # Only take live_status rows tied to a session inside THIS ride
+    sessions = await db.ride_sessions.find(
+        {"ride_id": ride_id, "rider_id": {"$in": rider_ids}, "status": "active"},
+        {"_id": 0},
+    ).to_list(500)
+    session_map = {s["rider_id"]: s["id"] for s in sessions}
+    lives = await db.live_status.find({"rider_id": {"$in": rider_ids}}, {"_id": 0}).to_list(500)
+    out: List[LiveRider] = []
+    for l in lives:
+        # Only include if the live_status is for a session in this ride
+        if session_map.get(l["rider_id"]) != l.get("ride_session_id"):
+            continue
+        u = await db.users.find_one({"id": l["rider_id"]}, {"_id": 0})
+        if not u:
+            continue
+        out.append(LiveRider(
+            rider=user_public(u),
+            lat=l["lat"], lng=l["lng"],
+            speed_kmh=l["speed_kmh"],
+            is_on_comms=l["is_on_comms"],
+            updated_at=l["updated_at"],
+        ))
+    return out
+
+
+# ---------- Push registration ----------
+@api.post("/register-push", status_code=201)
+async def register_push(body: RegisterPushBody, user: Annotated[dict, Depends(current_user)]):
+    payload = {"user_id": user["id"], "platform": body.platform, "device_token": body.device_token}
+    try:
+        resp = await _push_client.post("/api/v1/push/users/register", json=payload)
+        if resp.status_code == 401:
+            raise HTTPException(500, "EMERGENT_PUSH_KEY missing or invalid")
+        if resp.status_code >= 500:
+            raise HTTPException(502, "Push provider unavailable")
+        resp.raise_for_status()
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.warning("register-push exception: %s", e)
+        raise HTTPException(502, "Push provider unavailable")
+    return {"status": "registered"}
+
+
 # ---------- Leaderboard ----------
 @api.get("/leaderboard", response_model=List[LeaderboardEntry])
 async def leaderboard(
@@ -693,6 +791,18 @@ async def create_group(body: CreateGroupBody, user: Annotated[dict, Depends(curr
             "status": "invited", "joined_at": None,
             "on_comms": False, "muted": False, "speaking": False,
         })
+        try:
+            await send_push(
+                recipients=[target["id"]],
+                data={
+                    "title": f"{user.get('display_name') or user['username']} started a ride",
+                    "message": f"Join \"{body.title}\" — tap to hop on the intercom.",
+                    "action_url": f"/group/{ride_id}",
+                },
+                idempotency_key=f"invite-{ride_id}-{target['id']}",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("push on invite failed (non-blocking): %s", e)
     return await _build_group(ride_doc)
 
 
@@ -808,6 +918,18 @@ async def invite_more(ride_id: str, body: CreateGroupBody, user: Annotated[dict,
             "status": "invited", "joined_at": None,
             "on_comms": False, "muted": False, "speaking": False,
         })
+        try:
+            await send_push(
+                recipients=[target["id"]],
+                data={
+                    "title": f"{user.get('display_name') or user['username']} invited you",
+                    "message": f"Join \"{ride['title']}\" — tap to hop on the intercom.",
+                    "action_url": f"/group/{ride_id}",
+                },
+                idempotency_key=f"invite-more-{ride_id}-{target['id']}",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("push on invite-more failed (non-blocking): %s", e)
     await intercom.broadcast(ride_id, {"type": "roster"})
     return await _build_group(ride)
 

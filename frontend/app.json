@@ -26,6 +26,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.emergent.ridetogetherapp.q1dnkf",
+      "googleServicesFile": "./google-services.json",
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
@@ -45,6 +46,13 @@
       "expo-router",
       "expo-location",
       "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#FF6B00"
+        }
+      ],
       [
         "expo-splash-screen",
         {
