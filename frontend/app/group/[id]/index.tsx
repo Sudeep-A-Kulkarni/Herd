@@ -21,14 +21,20 @@ export default function GroupRoom() {
   const [rideSession, setRideSession] = useState<RideSummary | null>(null);
   const [startingRide, setStartingRide] = useState(false);
   const [endingRide, setEndingRide] = useState(false);
+  const [rideError, setRideError] = useState<string | null>(null);
   const intercom = useIntercom(id ?? null);
   const tracker = useRideTracker();
 
   const load = useCallback(async () => {
     if (!id) return;
     try {
-      const g = await api.get<GroupRide>(`/groups/${id}`);
+      const [g, activeSess] = await Promise.all([
+        api.get<GroupRide>(`/groups/${id}`),
+        api.get<RideSummary | null>("/rides/active").catch(() => null),
+      ]);
       setGroup(g);
+      // Hydrate rideSession if the backend already knows about an active session for THIS group
+      if (activeSess && activeSess.ride_id === id) setRideSession(activeSess);
     } catch { /* ignore */ }
     finally { setLoading(false); }
   }, [id]);
@@ -78,13 +84,24 @@ export default function GroupRoom() {
 
   const onStartRide = async () => {
     if (!id) return;
-    setStartingRide(true);
+    setStartingRide(true); setRideError(null);
+    let session: RideSummary | null = null;
     try {
-      const s = await api.post<RideSummary>(`/groups/${id}/start-ride`, {});
-      setRideSession(s);
+      session = await api.post<RideSummary>(`/groups/${id}/start-ride`, {});
+      setRideSession(session);
       await tracker.start();
-    } catch { /* ignore */ }
-    finally { setStartingRide(false); }
+    } catch (e: any) {
+      // Roll back the DB session if tracker permission was denied
+      if (session) {
+        try {
+          await api.post(`/rides/${session.id}/end`, {
+            distance_km: 0, top_speed_kmh: 0, avg_speed_kmh: 0, duration_seconds: 0, polyline: [],
+          });
+        } catch { /* ignore */ }
+        setRideSession(null);
+      }
+      setRideError(e?.message || "Location permission is required to track a ride");
+    } finally { setStartingRide(false); }
   };
 
   const onEndRide = async () => {
@@ -227,7 +244,7 @@ export default function GroupRoom() {
             ) : null}
           </View>
 
-          {tracker.tracking ? (
+          {tracker.tracking || rideSession ? (
             <>
               <View style={styles.miniStatsRow}>
                 <MiniStat label="Distance" value={stats.distanceKm.toFixed(2)} unit="km" testID="group-ride-distance" />
@@ -247,16 +264,21 @@ export default function GroupRoom() {
               </Pressable>
             </>
           ) : (
-            <Pressable
-              testID="group-start-ride-button"
-              style={[styles.smallBtn, { backgroundColor: theme.color.brand }]}
-              onPress={onStartRide}
-              disabled={startingRide}
-            >
-              {startingRide ? <ActivityIndicator color={theme.color.onBrand} /> :
-                <><Ionicons name="play" size={16} color={theme.color.onBrand} />
-                  <Text style={[styles.smallBtnText, { color: theme.color.onBrand }]}>Start my ride</Text></>}
-            </Pressable>
+            <>
+              <Pressable
+                testID="group-start-ride-button"
+                style={[styles.smallBtn, { backgroundColor: theme.color.brand }]}
+                onPress={onStartRide}
+                disabled={startingRide}
+              >
+                {startingRide ? <ActivityIndicator color={theme.color.onBrand} /> :
+                  <><Ionicons name="play" size={16} color={theme.color.onBrand} />
+                    <Text style={[styles.smallBtnText, { color: theme.color.onBrand }]}>Start my ride</Text></>}
+              </Pressable>
+              {rideError ? (
+                <Text style={styles.rideErrorText} testID="group-ride-error">{rideError}</Text>
+              ) : null}
+            </>
           )}
         </View>
 
@@ -547,6 +569,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12, borderRadius: theme.radius.md,
   },
   smallBtnText: { color: theme.color.text, fontWeight: "800", fontSize: 13 },
+  rideErrorText: { color: theme.color.error, fontSize: 12, textAlign: "center", marginTop: 4 },
   rosterHead: {
     flexDirection: "row", justifyContent: "space-between", alignItems: "center",
     marginTop: theme.space.sm,

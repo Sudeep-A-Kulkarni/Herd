@@ -50,8 +50,9 @@ export default function Recap() {
   }
 
   const merged = recap.members.flatMap((m) => m.polyline);
-  const topRider = [...recap.members].sort((a, b) => b.top_speed_kmh - a.top_speed_kmh)[0];
-  const distanceLeader = [...recap.members].sort((a, b) => b.distance_km - a.distance_km)[0];
+  const dedupedMembers = Array.from(new Map(recap.members.map((m) => [m.rider.id, m])).values());
+  const topRider = [...dedupedMembers].sort((a, b) => b.top_speed_kmh - a.top_speed_kmh)[0];
+  const distanceLeader = [...dedupedMembers].sort((a, b) => b.distance_km - a.distance_km)[0];
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]} testID="recap-screen">
@@ -116,7 +117,7 @@ export default function Recap() {
 
         <Text style={styles.sectionTitle}>Crew</Text>
         <View style={{ gap: theme.space.sm }}>
-          {recap.members.map((m) => (
+          {dedupedMembers.map((m) => (
             <View key={m.rider.id} style={styles.memberRow} testID={`recap-member-${m.rider.username}`}>
               <View style={styles.avatar}><Text style={styles.avatarText}>{m.rider.display_name.slice(0,1).toUpperCase()}</Text></View>
               <View style={{ flex: 1 }}>

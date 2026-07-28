@@ -95,8 +95,8 @@ export default function RideScreen() {
         <RouteMap polyline={s.polyline} center={center} testID="ride-map" />
       </View>
 
-      <SafeAreaView edges={["top"]} style={styles.topSafe} pointerEvents="box-none">
-        <View style={styles.topHud} pointerEvents="box-none">
+      <SafeAreaView edges={["top"]} style={styles.topSafe}>
+        <View style={styles.topHud}>
           <View style={styles.topLeft}>
             <Text style={styles.hudLabel}>Ride</Text>
             <Text style={styles.hudTitle}>{activeSession ? activeSession.title : "Ready"}</Text>
@@ -132,7 +132,7 @@ export default function RideScreen() {
         </View>
       </SafeAreaView>
 
-      <SafeAreaView edges={["bottom"]} style={styles.bottomSafe} pointerEvents="box-none">
+      <SafeAreaView edges={["bottom"]} style={styles.bottomSafe}>
         <View style={styles.bottomHud}>
           {error ? <Text style={styles.errorText} testID="ride-error">{error}</Text> : null}
           {!activeSession ? (
@@ -209,10 +209,11 @@ function Mini({ label, value, unit, testID }: { label: string; value: string; un
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.color.surface },
   mapWrap: { ...StyleSheet.absoluteFillObject },
-  topSafe: { position: "absolute", top: 0, left: 0, right: 0 },
+  topSafe: { position: "absolute", top: 0, left: 0, right: 0, pointerEvents: "box-none" },
   topHud: {
     marginTop: theme.space.sm, marginHorizontal: theme.space.md,
     flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: theme.space.md,
+    pointerEvents: "box-none",
   },
   topLeft: {
     backgroundColor: "rgba(13,14,17,0.85)", paddingHorizontal: theme.space.md, paddingVertical: theme.space.sm,
@@ -237,7 +238,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm,
     borderWidth: 1, borderColor: theme.color.border,
   },
-  bottomSafe: { position: "absolute", bottom: 0, left: 0, right: 0 },
+  bottomSafe: { position: "absolute", bottom: 0, left: 0, right: 0, pointerEvents: "box-none" },
   bottomHud: {
     margin: theme.space.md, backgroundColor: "rgba(13,14,17,0.94)",
     borderRadius: theme.radius.lg, padding: theme.space.lg,
